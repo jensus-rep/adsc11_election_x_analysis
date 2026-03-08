@@ -64,11 +64,29 @@ INSERT OR IGNORE INTO posts (
 def load_csv(csv_path: Path) -> pd.DataFrame:
     """
     Lädt eine CSV-Datei in ein DataFrame.
+
+    Unterstützt:
+    - UTF-8 und Windows-1252 Encoding
+    - Komma oder Semikolon als Separator
     """
+
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV-Datei nicht gefunden: {csv_path}")
 
-    df = pd.read_csv(csv_path)
+    try:
+        df = pd.read_csv(csv_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        print("UTF-8 fehlgeschlagen, versuche Windows-1252 Encoding...")
+        df = pd.read_csv(csv_path, encoding="cp1252")
+
+    # Wenn nur eine Spalte erkannt wurde, wahrscheinlich falscher Separator
+    if len(df.columns) == 1:
+        print("CSV scheint Semikolon-separiert zu sein. Lese erneut mit ';' Separator.")
+        try:
+            df = pd.read_csv(csv_path, encoding="utf-8", sep=";")
+        except UnicodeDecodeError:
+            df = pd.read_csv(csv_path, encoding="cp1252", sep=";")
+
     return df
 
 
