@@ -20,10 +20,10 @@ import pandas as pd
 
 DATABASE_PATH = Path("database") / "election_posts.db"
 
-PHASE_A_START = pd.Timestamp("2024-11-06")
-PHASE_A_END = pd.Timestamp("2024-12-26")
-PHASE_B_START = pd.Timestamp("2024-12-27")
-PHASE_B_END = pd.Timestamp("2025-02-23")
+PHASE_A_START = pd.Timestamp("2024-11-06", tz="UTC")
+PHASE_A_END = pd.Timestamp("2024-12-26 23:59:59", tz="UTC")
+PHASE_B_START = pd.Timestamp("2024-12-27", tz="UTC")
+PHASE_B_END = pd.Timestamp("2025-02-23 23:59:59", tz="UTC")
 
 
 DROP_PREPARED_TABLE_SQL = "DROP TABLE IF EXISTS posts_prepared;"
@@ -104,19 +104,12 @@ INSERT INTO posts_prepared (
 
 
 def load_posts(database_path: Path) -> pd.DataFrame:
-    """
-    Lädt die Rohdaten aus der Tabelle `posts`.
-    """
     with sqlite3.connect(database_path) as connection:
         df = pd.read_sql_query(SELECT_POSTS_SQL, connection)
-
     return df
 
 
 def filter_original_posts(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Behält nur Originalposts ohne Replies und ohne Retweets.
-    """
     df = df[(df["is_reply"] == 0) & (df["is_retweet"] == 0)].copy()
     return df
 
@@ -124,13 +117,20 @@ def filter_original_posts(df: pd.DataFrame) -> pd.DataFrame:
 def add_datetime_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Ergänzt Datums- und Wochenfelder für die Analyse.
+    Alle Zeitstempel werden einheitlich in UTC geparst.
+    Unterstützt gemischte Datumsformate aus Testdaten und API-Daten.
     """
-    df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+    df["created_at"] = pd.to_datetime(
+        df["created_at"],
+        errors="coerce",
+        utc=True,
+        format="mixed"
+    )
     df = df.dropna(subset=["created_at"]).copy()
 
     iso_calendar = df["created_at"].dt.isocalendar()
 
-    df["date_only"] = df["created_at"].dt.date.astype(str)
+    df["date_only"] = df["created_at"].dt.strftime("%Y-%m-%d")
     df["year"] = iso_calendar["year"].astype(int)
     df["week"] = iso_calendar["week"].astype(int)
     df["year_week"] = (
@@ -141,30 +141,23 @@ def add_datetime_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def assign_phase(timestamp: pd.Timestamp) -> str:
-    """
-    Ordnet einen Post einer Wahlkampfphase zu.
-    """
-    if PHASE_A_START <= timestamp.normalize() <= PHASE_A_END:
+    ts = timestamp.tz_convert("UTC")
+
+    if PHASE_A_START <= ts <= PHASE_A_END:
         return "Phase A"
-    if PHASE_B_START <= timestamp.normalize() <= PHASE_B_END:
+    if PHASE_B_START <= ts <= PHASE_B_END:
         return "Phase B"
     return "Outside Scope"
 
 
 def add_phase(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ergänzt die Spalte `phase` auf Basis des Datums.
-    """
     df["phase"] = df["created_at"].apply(assign_phase)
     df = df[df["phase"] != "Outside Scope"].copy()
     return df
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Vereinheitlicht Datentypen und Spaltenreihenfolge.
-    """
-    df["created_at"] = df["created_at"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    df["created_at"] = df["created_at"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
 
     text_columns = ["account_name", "handle", "party", "text", "source"]
     for col in text_columns:
@@ -210,9 +203,6 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def recreate_prepared_table(database_path: Path) -> None:
-    """
-    Löscht die vorbereitete Tabelle und erstellt sie neu.
-    """
     with sqlite3.connect(database_path) as connection:
         cursor = connection.cursor()
         cursor.execute(DROP_PREPARED_TABLE_SQL)
@@ -225,9 +215,6 @@ def recreate_prepared_table(database_path: Path) -> None:
 
 
 def save_prepared_posts(df: pd.DataFrame, database_path: Path) -> int:
-    """
-    Speichert den vorbereiteten Datensatz in `posts_prepared`.
-    """
     rows = list(df.itertuples(index=False, name=None))
 
     with sqlite3.connect(database_path) as connection:
@@ -239,9 +226,6 @@ def save_prepared_posts(df: pd.DataFrame, database_path: Path) -> int:
 
 
 def main() -> None:
-    """
-    Führt die Datenaufbereitung vollständig aus.
-    """
     print("Lade Rohdaten aus der Datenbank ...")
     df = load_posts(DATABASE_PATH)
     print(f"Geladene Zeilen: {len(df)}")
@@ -252,9 +236,16 @@ def main() -> None:
 
     print("Ergänze Datumsfelder ...")
     df = add_datetime_features(df)
+    print(f"Zeilen nach Datums-Parsing: {len(df)}")
 
     print("Ordne Wahlkampfphasen zu ...")
-    df = add_phase(df)
+    df["debug_phase"] = df["created_at"].apply(assign_phase)
+    print(df["debug_phase"].value_counts(dropna=False))
+
+    df = df[df["debug_phase"] != "Outside Scope"].copy()
+    df["phase"] = df["debug_phase"]
+    df = df.drop(columns=["debug_phase"])
+
     print(f"Zeilen innerhalb des Scopes: {len(df)}")
 
     print("Normalisiere Datensatz ...")
