@@ -1,2 +1,17 @@
 # election_x_analysis
-Analyse politischer Kommunikation auf X im Bundestagswahlkampf 2025. Das Projekt sammelt Beiträge ausgewählter politischer Akteure per Webscraping, speichert sie strukturiert in einer SQLite-Datenbank und analysiert Aktivität, Tonalität und Kommunikationsmuster im Verlauf des Wahlkampfs.
+
+Dieses Projekt analysiert politische Kommunikation auf X während des Bundestagswahlkampfs 2025.
+
+## Ziel
+Untersuchung von Aktivität, Tonalität und Kommunikationsmustern politischer Akteure im Verlauf des Wahlkampfs.
+
+## Datengrundlage
+Beiträge ausgewählter Politiker auf X zwischen dem 06.11.2024 und dem 23.02.2025.
+
+## Methodik
+- Webscraping der Beiträge
+- Speicherung in einer SQLite-Datenbank
+- Analyse der Aktivität, Tonalität und Kommunikationsformen
+
+## Reproduzierbarkeit
+Die Analyse kann über die bereitgestellten Python-Skripte reproduziert werden.
