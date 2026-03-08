@@ -1,7 +1,15 @@
 """
 01_scrape_posts.py
 
-Testscript zum Abrufen einiger Posts eines X-Accounts mit twikit.
+EXPERIMENTELLER PROTOTYP
+
+Erster Test für den Zugriff auf X mit twikit.
+Der Ansatz wird aktuell nicht produktiv verwendet, da der Zugriff
+durch Cloudflare / Plattformrestriktionen blockiert wird.
+
+Das Skript bleibt zur Dokumentation des Entwicklungsprozesses erhalten.
+
+*******
 
 Zweck:
 Überprüfung, ob der Zugriff auf X funktioniert und Tweets eines
@@ -34,10 +42,9 @@ async def fetch_posts(username: str, limit: int = 5) -> None:
 
     # Login-Daten aus Umgebungsvariablen lesen
     x_username = os.getenv("X_USERNAME")
-    x_email = os.getenv("X_EMAIL")
     x_password = os.getenv("X_PASSWORD")
 
-    if not all([x_username, x_email, x_password]):
+    if not all([x_username, x_password]):
         raise ValueError(
             "Login-Daten fehlen. Bitte Umgebungsvariablen setzen: "
             "X_USERNAME, X_EMAIL, X_PASSWORD"
@@ -46,7 +53,6 @@ async def fetch_posts(username: str, limit: int = 5) -> None:
     # Login bei X
     await client.login(
         auth_info_1=x_username,
-        auth_info_2=x_email,
         password=x_password
     )
 
