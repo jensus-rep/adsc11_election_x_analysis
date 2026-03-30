@@ -12,8 +12,9 @@ bestehende Schema der Tabelle `posts` überführen.
 
 Wichtige Verbesserung:
 Das Skript validiert den Account-Lookup strikt, verarbeitet nur gültige User-IDs,
-verhindert unsaubere Mischläufe auf bestehenden Daten und stoppt sofort bei
-kritischen API-Fehlern wie fehlenden Credits.
+legt die Datenbankstruktur bei Bedarf automatisch an, verhindert unsaubere
+Mischläufe auf bestehenden Daten und stoppt sofort bei kritischen API-Fehlern
+wie fehlenden Credits.
 """
 
 from pathlib import Path
@@ -30,7 +31,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_PATH = Path("database") / "election_posts.db"
+DATABASE_DIR = Path("database")
+DATABASE_PATH = DATABASE_DIR / "election_posts.db"
 ACCOUNT_LOOKUP_PATH = Path("data") / "raw" / "account_lookup.csv"
 
 BASE_URL_TEMPLATE = "https://api.x.com/2/users/{user_id}/tweets"
@@ -44,6 +46,30 @@ EXPECTED_ACCOUNT_COUNT = 10
 REQUEST_PAUSE_SECONDS = 1
 
 ALLOW_APPEND_TO_EXISTING_POSTS = False
+
+CREATE_POSTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS posts (
+    post_id TEXT PRIMARY KEY,
+    account_name TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    party TEXT,
+    created_at TEXT NOT NULL,
+    text TEXT NOT NULL,
+    like_count INTEGER DEFAULT 0,
+    retweet_count INTEGER DEFAULT 0,
+    reply_count INTEGER DEFAULT 0,
+    quote_count INTEGER DEFAULT 0,
+    is_reply INTEGER DEFAULT 0,
+    is_retweet INTEGER DEFAULT 0,
+    source TEXT
+);
+"""
+
+CREATE_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_posts_handle ON posts(handle);",
+    "CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_posts_party ON posts(party);",
+]
 
 INSERT_SQL = """
 INSERT OR IGNORE INTO posts (
@@ -82,6 +108,31 @@ def build_headers(bearer_token: str) -> dict[str, str]:
         "Authorization": f"Bearer {bearer_token}",
         "User-Agent": "election-x-analysis"
     }
+
+
+def ensure_database_directory() -> None:
+    """
+    Stellt sicher, dass der Datenbankordner existiert.
+    """
+    DATABASE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_database_ready(database_path: Path) -> None:
+    """
+    Erstellt bei Bedarf die Datenbank, die Tabelle posts und die Indizes.
+    """
+    ensure_database_directory()
+
+    with sqlite3.connect(database_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(CREATE_POSTS_TABLE_SQL)
+
+        for statement in CREATE_INDEXES_SQL:
+            cursor.execute(statement)
+
+        connection.commit()
+
+    print(f"Datenbankstruktur bereit: {database_path}")
 
 
 def load_account_lookup(csv_path: Path) -> pd.DataFrame:
@@ -162,31 +213,6 @@ def validate_account_lookup(df: pd.DataFrame) -> pd.DataFrame:
     return valid_df[
         ["account_name", "handle", "party", "user_id", "status_code", "error", "lookup_ok"]
     ].copy()
-
-
-def ensure_database_ready(database_path: Path) -> None:
-    """
-    Prüft, ob die Datenbank existiert und die Tabelle posts vorhanden ist.
-    """
-    if not database_path.exists():
-        raise FileNotFoundError(f"Datenbank nicht gefunden: {database_path}")
-
-    with sqlite3.connect(database_path) as connection:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table' AND name = 'posts'
-            """
-        )
-        result = cursor.fetchone()
-
-    if result is None:
-        raise ValueError(
-            "Die Tabelle 'posts' wurde in der Datenbank nicht gefunden. "
-            "Bitte zuerst das Datenbankschema anlegen."
-        )
 
 
 def get_existing_posts_state(database_path: Path) -> dict[str, Any]:
