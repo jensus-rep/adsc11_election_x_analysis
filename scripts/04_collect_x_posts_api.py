@@ -4,14 +4,16 @@
 Ruft Posts der ausgewählten politischen X-Accounts über die offizielle X API ab
 und speichert sie direkt in die SQLite-Datenbank.
 
+!!ACHTUNG KOSTET GELD BEI NUTZUNG!!
+
 Ziel:
 Echte Rohdaten für den definierten Untersuchungszeitraum sammeln und in das
 bestehende Schema der Tabelle `posts` überführen.
 
 Wichtige Verbesserung:
-Das Skript validiert den Account-Lookup strikt, verarbeitet nur gültige User-IDs
-und prüft am Ende, ob wirklich alle erwarteten Zielaccounts erfolgreich in die
-Datenerhebung eingegangen sind.
+Das Skript validiert den Account-Lookup strikt, verarbeitet nur gültige User-IDs,
+verhindert unsaubere Mischläufe auf bestehenden Daten und stoppt sofort bei
+kritischen API-Fehlern wie fehlenden Credits.
 """
 
 from pathlib import Path
@@ -21,8 +23,8 @@ import sys
 import time
 from typing import Any
 
-import requests
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 
 
@@ -40,6 +42,8 @@ MAX_RESULTS = 100
 REQUEST_TIMEOUT_SECONDS = 60
 EXPECTED_ACCOUNT_COUNT = 10
 REQUEST_PAUSE_SECONDS = 1
+
+ALLOW_APPEND_TO_EXISTING_POSTS = False
 
 INSERT_SQL = """
 INSERT OR IGNORE INTO posts (
@@ -125,13 +129,13 @@ def validate_account_lookup(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     df = df.copy()
-
     df["user_id_str"] = df["user_id"].astype(str).str.strip()
     df["lookup_ok_normalized"] = df["lookup_ok"].astype(str).str.strip().str.lower()
+    df["status_code_numeric"] = pd.to_numeric(df["status_code"], errors="coerce")
 
     valid_mask = (
         df["lookup_ok_normalized"].isin(["true", "1"])
-        & df["status_code"].fillna(0).astype(int).eq(200)
+        & df["status_code_numeric"].eq(200)
         & ~df["user_id"].isna()
         & ~df["user_id_str"].isin(["", "nan", "none", "null"])
     )
@@ -155,7 +159,97 @@ def validate_account_lookup(df: pd.DataFrame) -> pd.DataFrame:
             "Bitte zuerst 03_fetch_user_ids.py erfolgreich ausführen."
         )
 
-    return valid_df
+    return valid_df[
+        ["account_name", "handle", "party", "user_id", "status_code", "error", "lookup_ok"]
+    ].copy()
+
+
+def ensure_database_ready(database_path: Path) -> None:
+    """
+    Prüft, ob die Datenbank existiert und die Tabelle posts vorhanden ist.
+    """
+    if not database_path.exists():
+        raise FileNotFoundError(f"Datenbank nicht gefunden: {database_path}")
+
+    with sqlite3.connect(database_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'posts'
+            """
+        )
+        result = cursor.fetchone()
+
+    if result is None:
+        raise ValueError(
+            "Die Tabelle 'posts' wurde in der Datenbank nicht gefunden. "
+            "Bitte zuerst das Datenbankschema anlegen."
+        )
+
+
+def get_existing_posts_state(database_path: Path) -> dict[str, Any]:
+    """
+    Liest den aktuellen Zustand der Tabelle posts aus.
+    """
+    with sqlite3.connect(database_path) as connection:
+        cursor = connection.cursor()
+
+        cursor.execute("SELECT COUNT(*) FROM posts")
+        total_posts = int(cursor.fetchone()[0])
+
+        cursor.execute("SELECT COUNT(DISTINCT handle) FROM posts")
+        distinct_handles = int(cursor.fetchone()[0])
+
+        cursor.execute(
+            """
+            SELECT handle, COUNT(*) AS post_count
+            FROM posts
+            GROUP BY handle
+            ORDER BY handle
+            """
+        )
+        handle_rows = cursor.fetchall()
+
+    return {
+        "total_posts": total_posts,
+        "distinct_handles": distinct_handles,
+        "handle_rows": handle_rows,
+    }
+
+
+def ensure_safe_database_state(database_path: Path) -> None:
+    """
+    Verhindert standardmäßig Mischläufe auf bereits befüllten Daten.
+    """
+    state = get_existing_posts_state(database_path)
+
+    if state["total_posts"] == 0:
+        print("Datenbankprüfung: Tabelle posts ist leer. Sauberer Lauf möglich.")
+        return
+
+    print(
+        f"Datenbankprüfung: Tabelle posts enthält bereits {state['total_posts']} Zeilen "
+        f"und {state['distinct_handles']} unterschiedliche Handles."
+    )
+
+    if state["handle_rows"]:
+        print("\nBereits vorhandene Handles in posts:")
+        existing_df = pd.DataFrame(state["handle_rows"], columns=["handle", "post_count"])
+        print(existing_df.to_string(index=False))
+
+    if not ALLOW_APPEND_TO_EXISTING_POSTS:
+        raise ValueError(
+            "ABBRUCH: Tabelle posts enthält bereits Daten. "
+            "Für einen sauberen Re-Run bitte posts vorab leeren oder "
+            "ALLOW_APPEND_TO_EXISTING_POSTS bewusst auf True setzen."
+        )
+
+    print(
+        "\nWARNUNG: ALLOW_APPEND_TO_EXISTING_POSTS=True. "
+        "Der Lauf hängt auf bestehende Daten an."
+    )
 
 
 def extract_error_text(response: requests.Response) -> str:
@@ -181,6 +275,33 @@ def extract_error_text(response: requests.Response) -> str:
         return response.text.strip() or "Unbekannter API-Fehler"
     except ValueError:
         return response.text.strip() or "Unbekannter API-Fehler"
+
+
+def classify_api_error(status_code: int | None, error_text: str) -> str:
+    """
+    Klassifiziert API-Fehler grob für besseres Laufverhalten.
+    """
+    error_text_lower = (error_text or "").lower()
+
+    if status_code == 402 or "does not have any credits" in error_text_lower:
+        return "credit_exhausted"
+
+    if status_code == 429:
+        return "rate_limit"
+
+    if status_code in {500, 502, 503, 504}:
+        return "server_error"
+
+    if status_code in {401, 403}:
+        return "auth_error"
+
+    if status_code == 404:
+        return "not_found"
+
+    if status_code is None:
+        return "request_exception"
+
+    return "api_error"
 
 
 def is_reply(tweet: dict[str, Any]) -> int:
@@ -252,31 +373,37 @@ def fetch_posts_for_user(user_id: str, headers: dict[str, str]) -> dict[str, Any
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
+            error_text = f"RequestException: {exc}"
             return {
                 "ok": False,
                 "tweets": all_tweets,
                 "status_code": None,
-                "error": f"RequestException: {exc}",
+                "error": error_text,
+                "error_type": classify_api_error(None, error_text),
                 "pages_fetched": page_count,
             }
 
         if response.status_code != 200:
+            error_text = extract_error_text(response)
             return {
                 "ok": False,
                 "tweets": all_tweets,
                 "status_code": response.status_code,
-                "error": extract_error_text(response),
+                "error": error_text,
+                "error_type": classify_api_error(response.status_code, error_text),
                 "pages_fetched": page_count,
             }
 
         try:
             payload = response.json()
         except ValueError:
+            error_text = "Antwort konnte nicht als JSON geparst werden."
             return {
                 "ok": False,
                 "tweets": all_tweets,
                 "status_code": response.status_code,
-                "error": "Antwort konnte nicht als JSON geparst werden.",
+                "error": error_text,
+                "error_type": "invalid_json",
                 "pages_fetched": page_count,
             }
 
@@ -284,11 +411,13 @@ def fetch_posts_for_user(user_id: str, headers: dict[str, str]) -> dict[str, Any
         meta = payload.get("meta", {})
 
         if tweets and not isinstance(tweets, list):
+            error_text = "API-Antwort enthält kein gültiges Listenformat in 'data'."
             return {
                 "ok": False,
                 "tweets": all_tweets,
                 "status_code": response.status_code,
-                "error": "API-Antwort enthält kein gültiges Listenformat in 'data'.",
+                "error": error_text,
+                "error_type": "invalid_payload",
                 "pages_fetched": page_count,
             }
 
@@ -306,6 +435,7 @@ def fetch_posts_for_user(user_id: str, headers: dict[str, str]) -> dict[str, Any
         "tweets": all_tweets,
         "status_code": 200,
         "error": None,
+        "error_type": None,
         "pages_fetched": page_count,
     }
 
@@ -332,15 +462,46 @@ def fetch_distinct_handles_from_database(database_path: Path) -> set[str]:
     """
     Liest die in posts vorhandenen Handles aus der Datenbank.
     """
-    if not database_path.exists():
-        raise FileNotFoundError(f"Datenbank nicht gefunden: {database_path}")
-
     with sqlite3.connect(database_path) as connection:
         cursor = connection.cursor()
         cursor.execute("SELECT DISTINCT handle FROM posts")
         rows = cursor.fetchall()
 
     return {str(row[0]).strip() for row in rows if row and row[0] is not None}
+
+
+def print_final_summary(
+    valid_accounts_df: pd.DataFrame,
+    processed_handles: list[str],
+    failed_accounts: list[dict[str, Any]],
+    zero_post_accounts: list[dict[str, Any]],
+    total_rows_mapped: int,
+    total_rows_inserted: int,
+    db_handles: set[str],
+    missing_in_database: list[str],
+) -> None:
+    """
+    Gibt eine strukturierte Laufzusammenfassung aus.
+    """
+    print("\nDatenerhebung abgeschlossen.")
+    print(f"Valide Zielaccounts aus Lookup: {len(valid_accounts_df)}")
+    print(f"Erfolgreich technisch verarbeitete Accounts: {len(processed_handles)}")
+    print(f"Insgesamt abgerufene Posts: {total_rows_mapped}")
+    print(f"Insgesamt neu gespeicherte Posts: {total_rows_inserted}")
+    print(f"Handles in Tabelle posts: {len(db_handles)}")
+
+    if failed_accounts:
+        print("\nAccounts mit technischem Abruffehler:")
+        print(pd.DataFrame(failed_accounts).to_string(index=False))
+
+    if zero_post_accounts:
+        print("\nAccounts mit 0 Posts im Untersuchungszeitraum:")
+        print(pd.DataFrame(zero_post_accounts).to_string(index=False))
+
+    if missing_in_database:
+        print("\nFEHLENDE Handles in Tabelle posts:")
+        for handle in missing_in_database:
+            print(f"- @{handle}")
 
 
 def main() -> None:
@@ -350,6 +511,9 @@ def main() -> None:
     bearer_token = get_bearer_token()
     headers = build_headers(bearer_token)
 
+    ensure_database_ready(DATABASE_PATH)
+    ensure_safe_database_state(DATABASE_PATH)
+
     accounts_df = load_account_lookup(ACCOUNT_LOOKUP_PATH)
     valid_accounts_df = validate_account_lookup(accounts_df)
 
@@ -358,6 +522,7 @@ def main() -> None:
     processed_handles: list[str] = []
     failed_accounts: list[dict[str, Any]] = []
     zero_post_accounts: list[dict[str, Any]] = []
+    abort_run_immediately = False
 
     for _, account in valid_accounts_df.iterrows():
         account_name = str(account["account_name"]).strip()
@@ -371,17 +536,30 @@ def main() -> None:
         if not result["ok"]:
             print(
                 f"FEHLER beim Abruf für @{handle}: "
-                f"status_code={result['status_code']} | error={result['error']}"
+                f"status_code={result['status_code']} | "
+                f"error_type={result['error_type']} | "
+                f"error={result['error']}"
             )
+
             failed_accounts.append(
                 {
                     "account_name": account_name,
                     "handle": handle,
                     "user_id": user_id,
                     "status_code": result["status_code"],
+                    "error_type": result["error_type"],
                     "error": result["error"],
                 }
             )
+
+            if result["error_type"] == "credit_exhausted":
+                print(
+                    "\nKRITISCHER ABBRUCH: X API Credits sind aufgebraucht. "
+                    "Der Lauf wird sofort gestoppt, um keine weiteren Requests zu senden."
+                )
+                abort_run_immediately = True
+                break
+
             time.sleep(REQUEST_PAUSE_SECONDS)
             continue
 
@@ -421,25 +599,16 @@ def main() -> None:
     db_handles = fetch_distinct_handles_from_database(DATABASE_PATH)
     missing_in_database = sorted(expected_handles - db_handles)
 
-    print("\nDatenerhebung abgeschlossen.")
-    print(f"Valide Zielaccounts aus Lookup: {len(valid_accounts_df)}")
-    print(f"Erfolgreich technisch verarbeitete Accounts: {len(processed_handles)}")
-    print(f"Insgesamt abgerufene Posts: {total_rows_mapped}")
-    print(f"Insgesamt neu gespeicherte Posts: {total_rows_inserted}")
-    print(f"Handles in Tabelle posts: {len(db_handles)}")
-
-    if failed_accounts:
-        print("\nAccounts mit technischem Abruffehler:")
-        print(pd.DataFrame(failed_accounts).to_string(index=False))
-
-    if zero_post_accounts:
-        print("\nAccounts mit 0 Posts im Untersuchungszeitraum:")
-        print(pd.DataFrame(zero_post_accounts).to_string(index=False))
-
-    if missing_in_database:
-        print("\nFEHLENDE Handles in Tabelle posts:")
-        for handle in missing_in_database:
-            print(f"- @{handle}")
+    print_final_summary(
+        valid_accounts_df=valid_accounts_df,
+        processed_handles=processed_handles,
+        failed_accounts=failed_accounts,
+        zero_post_accounts=zero_post_accounts,
+        total_rows_mapped=total_rows_mapped,
+        total_rows_inserted=total_rows_inserted,
+        db_handles=db_handles,
+        missing_in_database=missing_in_database,
+    )
 
     run_success = (
         len(valid_accounts_df) == EXPECTED_ACCOUNT_COUNT
@@ -447,10 +616,16 @@ def main() -> None:
         and not missing_in_database
     )
 
+    if abort_run_immediately:
+        print(
+            "\nABBRUCH: Der Lauf wurde wegen erschöpfter X API Credits vorzeitig gestoppt."
+        )
+        sys.exit(1)
+
     if not run_success:
         print(
             "\nABBRUCH: Die Datenerhebung ist unvollständig. "
-            "Bitte Lookup und API-Abruf prüfen, bevor die Pipeline fortgesetzt wird."
+            "Bitte Lookup, Datenbankzustand und API-Abruf prüfen, bevor die Pipeline fortgesetzt wird."
         )
         sys.exit(1)
 
