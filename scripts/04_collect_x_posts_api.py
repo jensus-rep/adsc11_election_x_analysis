@@ -15,6 +15,10 @@ Das Skript validiert den Account-Lookup strikt, verarbeitet nur gültige User-ID
 legt die Datenbankstruktur bei Bedarf automatisch an, verhindert unsaubere
 Mischläufe auf bestehenden Daten und stoppt sofort bei kritischen API-Fehlern
 wie fehlenden Credits.
+
+Methodische Logik:
+Accounts mit 0 Originalposts im Untersuchungszeitraum gelten als fachliche
+Nullfälle und nicht als technischer Fehler.
 """
 
 from pathlib import Path
@@ -91,9 +95,6 @@ INSERT OR IGNORE INTO posts (
 
 
 def get_bearer_token() -> str:
-    """
-    Liest den Bearer Token aus der .env-Datei.
-    """
     token = os.getenv("X_BEARER_TOKEN")
     if not token:
         raise ValueError("Kein Bearer Token gefunden. Bitte X_BEARER_TOKEN in der .env setzen.")
@@ -101,9 +102,6 @@ def get_bearer_token() -> str:
 
 
 def build_headers(bearer_token: str) -> dict[str, str]:
-    """
-    Baut den Authorization Header für die X API.
-    """
     return {
         "Authorization": f"Bearer {bearer_token}",
         "User-Agent": "election-x-analysis"
@@ -111,16 +109,10 @@ def build_headers(bearer_token: str) -> dict[str, str]:
 
 
 def ensure_database_directory() -> None:
-    """
-    Stellt sicher, dass der Datenbankordner existiert.
-    """
     DATABASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_database_ready(database_path: Path) -> None:
-    """
-    Erstellt bei Bedarf die Datenbank, die Tabelle posts und die Indizes.
-    """
     ensure_database_directory()
 
     with sqlite3.connect(database_path) as connection:
@@ -136,18 +128,12 @@ def ensure_database_ready(database_path: Path) -> None:
 
 
 def load_account_lookup(csv_path: Path) -> pd.DataFrame:
-    """
-    Lädt die Lookup-Datei und prüft, ob sie vorhanden ist.
-    """
     if not csv_path.exists():
         raise FileNotFoundError(f"Account-Lookup-Datei nicht gefunden: {csv_path}")
     return pd.read_csv(csv_path)
 
 
 def validate_account_lookup(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Prüft den Lookup auf Vollständigkeit und filtert nur valide Accounts heraus.
-    """
     required_columns = {
         "account_name",
         "handle",
@@ -216,9 +202,6 @@ def validate_account_lookup(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_existing_posts_state(database_path: Path) -> dict[str, Any]:
-    """
-    Liest den aktuellen Zustand der Tabelle posts aus.
-    """
     with sqlite3.connect(database_path) as connection:
         cursor = connection.cursor()
 
@@ -246,9 +229,6 @@ def get_existing_posts_state(database_path: Path) -> dict[str, Any]:
 
 
 def ensure_safe_database_state(database_path: Path) -> None:
-    """
-    Verhindert standardmäßig Mischläufe auf bereits befüllten Daten.
-    """
     state = get_existing_posts_state(database_path)
 
     if state["total_posts"] == 0:
@@ -279,9 +259,6 @@ def ensure_safe_database_state(database_path: Path) -> None:
 
 
 def extract_error_text(response: requests.Response) -> str:
-    """
-    Extrahiert eine möglichst brauchbare Fehlermeldung aus der API-Antwort.
-    """
     try:
         payload = response.json()
         if isinstance(payload, dict):
@@ -304,9 +281,6 @@ def extract_error_text(response: requests.Response) -> str:
 
 
 def classify_api_error(status_code: int | None, error_text: str) -> str:
-    """
-    Klassifiziert API-Fehler grob für besseres Laufverhalten.
-    """
     error_text_lower = (error_text or "").lower()
 
     if status_code == 402 or "does not have any credits" in error_text_lower:
@@ -331,25 +305,16 @@ def classify_api_error(status_code: int | None, error_text: str) -> str:
 
 
 def is_reply(tweet: dict[str, Any]) -> int:
-    """
-    Prüft, ob ein Tweet eine Reply ist.
-    """
     referenced = tweet.get("referenced_tweets", [])
     return int(any(ref.get("type") == "replied_to" for ref in referenced))
 
 
 def is_retweet(tweet: dict[str, Any]) -> int:
-    """
-    Prüft, ob ein Tweet ein Retweet ist.
-    """
     referenced = tweet.get("referenced_tweets", [])
     return int(any(ref.get("type") == "retweeted" for ref in referenced))
 
 
 def map_tweet_to_row(tweet: dict[str, Any], account_name: str, handle: str, party: str) -> tuple:
-    """
-    Mappt einen Tweet aus der API in eine DB-Zeile.
-    """
     metrics = tweet.get("public_metrics", {})
 
     return (
@@ -370,9 +335,6 @@ def map_tweet_to_row(tweet: dict[str, Any], account_name: str, handle: str, part
 
 
 def fetch_posts_for_user(user_id: str, headers: dict[str, str]) -> dict[str, Any]:
-    """
-    Ruft alle Posts eines Users im definierten Zeitraum über die X API ab.
-    """
     all_tweets: list[dict[str, Any]] = []
     next_token = None
     page_count = 0
@@ -467,9 +429,6 @@ def fetch_posts_for_user(user_id: str, headers: dict[str, str]) -> dict[str, Any
 
 
 def insert_rows(rows: list[tuple], database_path: Path) -> int:
-    """
-    Fügt Zeilen in die Tabelle posts ein und gibt die Anzahl tatsächlich eingefügter Zeilen zurück.
-    """
     if not rows:
         return 0
 
@@ -485,9 +444,6 @@ def insert_rows(rows: list[tuple], database_path: Path) -> int:
 
 
 def fetch_distinct_handles_from_database(database_path: Path) -> set[str]:
-    """
-    Liest die in posts vorhandenen Handles aus der Datenbank.
-    """
     with sqlite3.connect(database_path) as connection:
         cursor = connection.cursor()
         cursor.execute("SELECT DISTINCT handle FROM posts")
@@ -504,11 +460,8 @@ def print_final_summary(
     total_rows_mapped: int,
     total_rows_inserted: int,
     db_handles: set[str],
-    missing_in_database: list[str],
+    missing_expected_nonzero_handles: list[str],
 ) -> None:
-    """
-    Gibt eine strukturierte Laufzusammenfassung aus.
-    """
     print("\nDatenerhebung abgeschlossen.")
     print(f"Valide Zielaccounts aus Lookup: {len(valid_accounts_df)}")
     print(f"Erfolgreich technisch verarbeitete Accounts: {len(processed_handles)}")
@@ -524,16 +477,13 @@ def print_final_summary(
         print("\nAccounts mit 0 Posts im Untersuchungszeitraum:")
         print(pd.DataFrame(zero_post_accounts).to_string(index=False))
 
-    if missing_in_database:
-        print("\nFEHLENDE Handles in Tabelle posts:")
-        for handle in missing_in_database:
+    if missing_expected_nonzero_handles:
+        print("\nFEHLENDE Handles in Tabelle posts trotz erfolgreichem Non-Zero-Abruf:")
+        for handle in missing_expected_nonzero_handles:
             print(f"- @{handle}")
 
 
 def main() -> None:
-    """
-    Führt den vollständigen Post-Abruf aus.
-    """
     bearer_token = get_bearer_token()
     headers = build_headers(bearer_token)
 
@@ -548,6 +498,7 @@ def main() -> None:
     processed_handles: list[str] = []
     failed_accounts: list[dict[str, Any]] = []
     zero_post_accounts: list[dict[str, Any]] = []
+    nonzero_post_handles: set[str] = set()
     abort_run_immediately = False
 
     for _, account in valid_accounts_df.iterrows():
@@ -618,12 +569,13 @@ def main() -> None:
             print(
                 f"WARNUNG: Für @{handle} wurden 0 Posts im definierten Zeitraum zurückgegeben."
             )
+        else:
+            nonzero_post_handles.add(handle)
 
         time.sleep(REQUEST_PAUSE_SECONDS)
 
-    expected_handles = set(valid_accounts_df["handle"].astype(str).str.strip().tolist())
     db_handles = fetch_distinct_handles_from_database(DATABASE_PATH)
-    missing_in_database = sorted(expected_handles - db_handles)
+    missing_expected_nonzero_handles = sorted(nonzero_post_handles - db_handles)
 
     print_final_summary(
         valid_accounts_df=valid_accounts_df,
@@ -633,13 +585,14 @@ def main() -> None:
         total_rows_mapped=total_rows_mapped,
         total_rows_inserted=total_rows_inserted,
         db_handles=db_handles,
-        missing_in_database=missing_in_database,
+        missing_expected_nonzero_handles=missing_expected_nonzero_handles,
     )
 
     run_success = (
         len(valid_accounts_df) == EXPECTED_ACCOUNT_COUNT
+        and len(processed_handles) == EXPECTED_ACCOUNT_COUNT
         and not failed_accounts
-        and not missing_in_database
+        and not missing_expected_nonzero_handles
     )
 
     if abort_run_immediately:
@@ -650,13 +603,16 @@ def main() -> None:
 
     if not run_success:
         print(
-            "\nABBRUCH: Die Datenerhebung ist unvollständig. "
+            "\nABBRUCH: Die Datenerhebung ist technisch unvollständig. "
             "Bitte Lookup, Datenbankzustand und API-Abruf prüfen, bevor die Pipeline fortgesetzt wird."
         )
         sys.exit(1)
 
     print(
-        "\nAlle erwarteten Zielaccounts wurden erfolgreich in die Datenerhebung übernommen."
+        "\nDatenerhebung technisch erfolgreich abgeschlossen."
+    )
+    print(
+        "Hinweis: Accounts mit 0 Posts im Untersuchungszeitraum wurden als fachliche Nullfälle protokolliert."
     )
 
 
