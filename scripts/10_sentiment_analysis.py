@@ -1,5 +1,5 @@
 """
-08_sentiment_analysis.py
+10_sentiment_analysis.py
 
 Führt eine einfache Sentiment-Analyse auf Basis der vorbereiteten
 Posts in `posts_prepared` durch.

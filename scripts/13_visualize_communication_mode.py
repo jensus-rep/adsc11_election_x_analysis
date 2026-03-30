@@ -1,5 +1,5 @@
 """
-11_visualize_communication_mode.py
+13_visualize_communication_mode.py
 
 Erstellt Visualisierungen auf Basis der Kommunikationsmodus-Analyse.
 

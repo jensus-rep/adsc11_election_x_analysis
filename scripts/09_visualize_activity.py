@@ -1,5 +1,5 @@
 """
-07_visualize_activity.py
+09_visualize_activity.py
 
 Erstellt Visualisierungen auf Basis der Aktivitätsanalyse.
 

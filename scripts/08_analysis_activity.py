@@ -1,5 +1,5 @@
 """
-06_analysis_activity.py
+08_analysis_activity.py
 
 Analysiert die Posting-Aktivität der politischen Accounts
 auf Basis der vorbereiteten Tabelle `posts_prepared`.
