@@ -1,5 +1,5 @@
 """
-03_import_posts.py
+02_import_posts.py
 
 Importiert Posts aus einer CSV-Datei in die SQLite-Datenbank.
 

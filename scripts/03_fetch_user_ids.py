@@ -1,5 +1,5 @@
 """
-06_fetch_user_ids.py
+03_fetch_user_ids.py
 
 Lädt für eine definierte Liste politischer X-Accounts die
 zugehörigen User-IDs über die offizielle X API und speichert

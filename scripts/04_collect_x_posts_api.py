@@ -1,5 +1,5 @@
 """
-07_collect_x_posts_api.py
+04_collect_x_posts_api.py
 
 Ruft Posts der ausgewählten politischen X-Accounts über die offizielle X API ab
 und speichert sie direkt in die SQLite-Datenbank.
