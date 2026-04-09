@@ -115,13 +115,19 @@ Die finale Datenerhebung und Auswertung dieses Projekts basiert vollständig auf
 
 ## Methodische Einordnung
 
-Zu Beginn des Projekts wurde ein experimenteller alternativer Zugriffspfad geprüft. Dieser wurde jedoch nicht als produktiver Erhebungspfad weiterverfolgt. Die finale Analyse basiert vollständig auf einer API-basierten Datenerhebung, einer bereinigten Rohdatenbasis und einer konsistent neu erzeugten Analysebasis.
+Zu Beginn des Projekts wurde ein experimenteller Webscraping-Ansatz geprüft, da das Modul grundsätzlich an datenbasierte Online-Erhebungen anschließt. Im Verlauf der technischen Umsetzung zeigte sich jedoch, dass dieser Ansatz für eine saubere produktive Datenerhebung nicht hinreichend belastbar war, da der Zugriff auf Plattformdaten technisch eingeschränkt war. Daher wurde die finale Datenerhebung bewusst auf einen API-basierten Zugriff über die offizielle X API umgestellt.
+
+Die finale Analyse basiert vollständig auf dieser API-basierten Datenerhebung, einer bereinigten Rohdatenbasis und einer konsistent neu erzeugten Analysebasis.
 
 Ein früher Testlauf diente ausschließlich der technischen Prüfung der Pipeline und wurde nicht als finale Analysegrundlage verwendet.
 
 ## Analysebasis
 
 Die Rohdaten werden in der SQLite-Datenbank in der Tabelle `posts` gespeichert. Für die eigentliche Auswertung wird daraus die vorbereitete Tabelle `posts_prepared` erzeugt. Diese bildet die verbindliche Grundlage aller nachgelagerten Analysen und Visualisierungen.
+
+## Hinweis zur finalen Analysebasis
+
+Technisch wurden 10 Zielaccounts in die Datenerhebung aufgenommen. In der finalen Analysebasis sind 8 Accounts mit beobachtbaren Originalposts im definierten Untersuchungszeitraum enthalten. Für zwei Zielaccounts konnten unter den gesetzten Analysebedingungen keine Originalposts festgestellt werden. Diese Fälle wurden als fachliche Nullfälle dokumentiert und nicht als technischer Fehler interpretiert.
 
 ## Zentrale Analyseperspektiven
 
